@@ -55,7 +55,7 @@ button:disabled{opacity:.5;cursor:default}
     return crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
   }
   async function open(mk, rel){
-    var r = await fetch(rel + '.enc'); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + rel);
+    var r = await fetch(rel + '.enc', { cache: 'no-cache' }); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + rel);   // 올릴 때마다 바로 보이게 — 바뀌었는지만 묻고(ETag) 그대로면 다시 받지 않는다
     var buf = await r.arrayBuffer();
     return crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(buf, 0, 12) }, mk, new Uint8Array(buf, 12));
   }
