@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>관 내부 점검</title>
+<style>
+:root{--ink:#161b20;--ink2:#434f57;--mute:#6b767e;--line:#d6dce0;--bg:#f4f6f7;--panel:#fff;--bad:#b3261e;--sans:"Pretendard","Malgun Gothic","Apple SD Gothic Neo","Segoe UI",sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);display:grid;place-items:center;padding:16px;word-break:keep-all}
+form{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:32px 28px 26px;width:min(420px,100%);display:flex;flex-direction:column;gap:14px}
+h1{font-size:22px;font-weight:700;letter-spacing:-.01em}
+p{font-size:14px;color:var(--mute);line-height:1.55}
+input[type=text]{height:44px;border:1px solid var(--line);border-radius:4px;padding:0 12px;font:16px/1 ui-monospace,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;width:100%}
+input[type=text]:focus{outline:2px solid #2b6c8f;outline-offset:1px;border-color:transparent}
+label{font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:6px;cursor:pointer}
+button{height:44px;border:0;border-radius:4px;background:var(--ink);color:#fff;font:600 15px var(--sans);cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+#st{min-height:20px;font-size:13px;color:var(--mute)}
+#st.bad{color:var(--bad)}
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off" hidden>
+  <h1>관 내부 점검</h1>
+  <p>초대받은 사람만 열 수 있습니다. 받은 초대 코드를 넣어 주세요.</p>
+  <input type="text" id="c" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" spellcheck="false" aria-label="초대 코드" autofocus>
+  <label><input type="checkbox" id="keep"> 이 기기에 기억</label>
+  <button id="go" type="submit">열기</button>
+  <div id="st" role="status"></div>
+</form>
+<script>
+/* 잠근 판 로더 — app/lock.py 가 만든 keys.json · *.enc 를 초대 코드로 풀어 그린다.
+   마스터 열쇠는 코드로 만든 열쇠(PBKDF2-SHA256)로 싸여 있고, 페이지(app.html)와 그림·영상은 그 마스터 열쇠(AES-GCM)로 잠겨 있다.
+   전역 이름을 남기지 않는다 — 풀어 그린 페이지의 전역(const/let)과 부딪히지 않게. 남기는 것은 window.__asset 하나. */
+(function(){
+  var K = 'pipe-invite', te = new TextEncoder(), $ = function(id){ return document.getElementById(id); };
+  function norm(c){ return String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1'); }
+  function unb64(s){ var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  function hex(buf){ return Array.prototype.map.call(new Uint8Array(buf), function(x){ return x.toString(16).padStart(2, '0'); }).join(''); }
+  function store(){ try{ return sessionStorage.getItem(K) || localStorage.getItem(K) || ''; }catch(e){ return ''; } }
+  function put(c, keep){ try{ sessionStorage.removeItem(K); localStorage.removeItem(K); if (c) (keep ? localStorage : sessionStorage).setItem(K, c); }catch(e){} }
+  var MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', mp4: 'video/mp4', webm: 'video/webm' };
+
+  async function unlock(code){
+    var c = norm(code); if (c.length < 16) throw new Error('short');
+    var ring = await (await fetch('keys.json', { cache: 'no-store' })).json();
+    var id = hex(await crypto.subtle.digest('SHA-256', te.encode('pipe-inspect/' + c))).slice(0, 16);
+    var e = ring.keys.filter(function(k){ return k.id === id; })[0]; if (!e) throw new Error('nokey');
+    var base = await crypto.subtle.importKey('raw', te.encode(c), 'PBKDF2', false, ['deriveKey']);
+    var kek = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(e.salt), iterations: e.it, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    var mk = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(e.iv) }, kek, unb64(e.w));
+    return crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
+  }
+  async function open(mk, rel){
+    var r = await fetch(rel + '.enc'); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + rel);
+    var buf = await r.arrayBuffer();
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(buf, 0, 12) }, mk, new Uint8Array(buf, 12));
+  }
+  async function start(code, keep){
+    var mk = await unlock(code);
+    var html = new TextDecoder().decode(await open(mk, 'app.html'));
+    put(norm(code), keep);
+    var cache = {};
+    window.__asset = function(u){                       // 페이지가 그림·영상을 부를 때 — 받아서 풀고 blob 주소로
+      u = String(u).replace(/^\.?\//, '').split('?')[0];
+      if (!cache[u]) cache[u] = open(mk, u).then(function(b){ return URL.createObjectURL(new Blob([b], { type: MIME[(u.split('.').pop() || '').toLowerCase()] || 'application/octet-stream' })); });
+      return cache[u];
+    };
+    document.open(); document.write(html); document.close();
+  }
+
+  var f = $('f'), st = $('st');
+  function ask(msg, bad){ f.hidden = false; st.textContent = msg || ''; st.className = bad ? 'bad' : ''; $('c').focus(); }
+  f.addEventListener('submit', async function(ev){
+    ev.preventDefault(); $('go').disabled = true; ask('여는 중…');
+    try{ await start($('c').value, $('keep').checked); }
+    catch(e){ $('go').disabled = false; ask(/nokey|short|OperationError/i.test(String(e && (e.message || e.name))) ? '초대 코드가 맞지 않습니다' : '열지 못했습니다 — ' + (e && e.message || e), true); }
+  });
+
+  if (/[?&]logout\b/.test(location.search)){ put(''); history.replaceState(null, '', location.pathname); }
+  var m = location.hash.match(/[#&]c=([0-9A-Za-z-]+)/);
+  if (m) history.replaceState(null, '', location.pathname + location.search);   // 주소창에 코드를 남기지 않는다
+  var code = m ? m[1] : store();
+  if (code){ ask('여는 중…'); start(code, !!(m ? false : (function(){ try{ return localStorage.getItem(K); }catch(e){ return ''; } })())).catch(function(){ put(''); ask(m ? '초대 코드가 맞지 않습니다' : '기억한 코드가 더는 맞지 않습니다 — 다시 넣어 주세요', true); }); }
+  else ask('');
+  window.addEventListener('hashchange', function(){            // 코드 입력 화면에서 초대 주소를 붙여 넣은 경우
+    var h = location.hash.match(/[#&]c=([0-9A-Za-z-]+)/); if (!h || window.__asset) return;
+    history.replaceState(null, '', location.pathname + location.search); ask('여는 중…');
+    start(h[1], false).catch(function(){ ask('초대 코드가 맞지 않습니다', true); });
+  });
+})();
+</script>
+</body>
+</html>
